@@ -1,0 +1,15 @@
+# Composer dependencies
+/vendor/
+/composer.lock
+
+# PHPUnit cache
+/.phpunit.cache/
+
+# Test and coverage output
+/coverage/
+
+# Benchmark output
+/benchmark.json
+
+# macOS
+.DS_Store

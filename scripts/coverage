@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PHP_BIN="${PHP_BIN:-/opt/homebrew/opt/php@8.3/bin/php}"
+COMPOSER_BIN="${COMPOSER_BIN:-/opt/homebrew/bin/composer}"
+
+if [[ ! -x "$PHP_BIN" ]]; then
+  PHP_BIN="php"
+fi
+
+if [[ ! -f "$ROOT/vendor/autoload.php" ]]; then
+  "$PHP_BIN" "$COMPOSER_BIN" install --no-interaction --working-dir "$ROOT"
+fi
+
+if ! command -v bun >/dev/null 2>&1; then
+  echo "bun is required for interop tests used by coverage run." >&2
+  exit 1
+fi
+
+if ! "$PHP_BIN" -r 'exit(extension_loaded("pcov") ? 0 : 1);'; then
+  echo "pcov extension is required for coverage. Enable ext-pcov first." >&2
+  exit 1
+fi
+
+mkdir -p "$ROOT/coverage"
+
+cd "$ROOT"
+"$PHP_BIN" \
+  -d pcov.enabled=1 \
+  -d pcov.directory="$ROOT/src" \
+  vendor/bin/phpunit \
+  -c phpunit.xml \
+  --coverage-clover coverage/clover.xml
+
+"$PHP_BIN" tools/clover-to-lcov.php coverage/clover.xml coverage/lcov.info
+
+if [[ ! -s "$ROOT/coverage/lcov.info" ]]; then
+  echo "coverage/lcov.info was not generated or is empty." >&2
+  exit 1
+fi
+
+echo "Wrote coverage/lcov.info"
