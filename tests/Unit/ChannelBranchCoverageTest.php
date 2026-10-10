@@ -230,6 +230,39 @@ final class ChannelBranchCoverageTest extends TestCase
         }
     }
 
+    public function testMergeKeepsPostOtherAndStreamOtherUnderPrefix(): void
+    {
+        $match = static fn(string $path): bool => str_starts_with($path, 'dyn/');
+        $inner = (new Channel())
+            ->postOther($match, static fn(array $body): string => 'post:' . (string) $body['body'])
+            ->streamOther(static fn(string $path): bool => $path === 'feed', static function (): \Generator {
+                yield 1;
+            });
+        $outer = (new Channel())->merge($inner, 'm');
+
+        self::assertCount(1, $outer->otherPostApi);
+        self::assertTrue(($outer->otherPostApi[0]['path'])('m/dyn/x'));
+        self::assertFalse(($outer->otherPostApi[0]['path'])('dyn/x'));
+        self::assertTrue(($outer->otherStreamApi[0]['path'])('m/feed'));
+
+        $sender = $outer->process();
+        try {
+            self::assertSame('post:a', $sender->send('m/dyn/x', 'a'));
+            try {
+                $sender->send('dyn/x', 'a');
+                self::fail('unscoped path must not reach the merged catch-all');
+            } catch (\Throwable $error) {
+                self::assertStringContainsString('api not found', $error->getMessage());
+            }
+        } finally {
+            $sender->stop();
+        }
+
+        // Without a prefix the matchers are reused as-is
+        $flat = (new Channel())->merge($inner);
+        self::assertSame($match, $flat->otherPostApi[0]['path']);
+    }
+
     public function testMergeAndApiParserBranches(): void
     {
         $sourceSub = new Subscription();

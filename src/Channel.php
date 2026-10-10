@@ -566,6 +566,18 @@ final class Channel
             $this->stream($p . $key, $handler);
         }
 
+        $scoped = static fn (callable $match): callable => $p === ''
+            ? $match
+            : static fn (string $path): bool => str_starts_with($path, $p) && $match(substr($path, strlen($p)));
+
+        foreach ($channel->otherPostApi as $route) {
+            $this->postOther($scoped($route['path']), $route['request']);
+        }
+
+        foreach ($channel->otherStreamApi as $route) {
+            $this->streamOther($scoped($route['path']), $route['request']);
+        }
+
         return $this;
     }
 
