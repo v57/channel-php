@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Prints the first PHP binary that has ext-openswoole loaded: $PHP_BIN, then the Homebrew
+# php@8.4 / php@8.3 kegs, then `php` on PATH. (Homebrew's default `php` is 8.5 without openswoole.)
+set -euo pipefail
+
+for candidate in "${PHP_BIN:-}" /opt/homebrew/opt/php@8.4/bin/php /opt/homebrew/opt/php@8.3/bin/php php; do
+  [[ -z "$candidate" ]] && continue
+  command -v "$candidate" >/dev/null 2>&1 || continue
+  if "$candidate" --ri openswoole >/dev/null 2>&1; then
+    echo "$candidate"
+    exit 0
+  fi
+done
+
+echo "No PHP with ext-openswoole found (set PHP_BIN, or: brew install php@8.4 && pecl install openswoole)." >&2
+exit 1

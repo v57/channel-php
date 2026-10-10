@@ -8,7 +8,7 @@ Powerful and lightweight communication built for modern language. PHP implementa
 # Installation (macOS/Homebrew)
 
 ```bash
-brew install php@8.3 composer bun lcov autoconf pkg-config
+brew install php@8.4 composer bun lcov autoconf pkg-config
 pecl install openswoole
 pecl install simdjson
 pecl install pcov

@@ -2,12 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PHP_BIN="${PHP_BIN:-/opt/homebrew/opt/php@8.3/bin/php}"
+PHP_BIN="$("$ROOT/scripts/find-php")"
 COMPOSER_BIN="${COMPOSER_BIN:-/opt/homebrew/bin/composer}"
-
-if [[ ! -x "$PHP_BIN" ]]; then
-  PHP_BIN="php"
-fi
 
 if [[ ! -f "$ROOT/vendor/autoload.php" ]]; then
   "$PHP_BIN" "$COMPOSER_BIN" install --no-interaction --working-dir "$ROOT"
