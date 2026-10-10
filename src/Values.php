@@ -78,7 +78,7 @@ final class Values implements \IteratorAggregate
     {
         if (array_key_exists('error', $response) && $response['error'] !== null) {
             $this->rid = null;
-            throw new ChannelException((string) $response['error']);
+            throw ChannelException::from($response['error']);
         }
 
         if (!empty($response['done'])) {

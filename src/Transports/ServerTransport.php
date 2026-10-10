@@ -82,6 +82,10 @@ final class ServerTransport
             'max_request' => 0,
             'dispatch_mode' => 2,
             'log_file' => '/tmp/channel-php-openswoole.log',
+            // Largest WebSocket message accepted: 16 MiB, the TS/Bun default (OpenSwoole's default
+            // is 2 MiB). Note: this does NOT avoid OpenSwoole 26.2's segfault on a declared frame
+            // length of 2^64-1 (upstream bug, AUDIT §2.6); only an upstream fix does.
+            'package_max_length' => (int) ($options['maxPayload'] ?? WebSocketClient::DEFAULT_MAX_PAYLOAD),
         ]);
 
         /** @var array<int, array{state:mixed,sender:mixed,subscriptions:TopicSubscriptions,topics:array<string,bool>}> $contexts */

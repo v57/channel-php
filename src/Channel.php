@@ -91,19 +91,32 @@ final class Channel
             }
         }
 
-        $toDelete = [];
-        foreach ($this->requests as $id => $request) {
-            if ($request->sender === $sender) {
-                $toDelete[] = $id;
-            }
-        }
-
-        foreach ($toDelete as $id) {
-            unset($this->requests[$id]);
-        }
+        $this->failRequests($sender, 'disconnected');
 
         $sender->streams = [];
         $sender->requests = [];
+    }
+
+    /**
+     * Settles every pending outgoing request made through $sender with $error.
+     * (TS silently drops them on disconnect, which strands the caller's waiter forever.)
+     */
+    public function failRequests(Sender $sender, string $error): void
+    {
+        $failed = [];
+        foreach ($this->requests as $id => $request) {
+            if ($request->sender === $sender) {
+                $failed[$id] = $request;
+            }
+        }
+
+        foreach ($failed as $id => $request) {
+            unset($this->requests[$id]);
+            try {
+                ($request->response)(['id' => $id, 'error' => $error]);
+            } catch (\Throwable) {
+            }
+        }
     }
 
     public function makeRequest(

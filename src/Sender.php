@@ -77,7 +77,7 @@ class Sender
             if ($error instanceof \Throwable) {
                 throw $error;
             }
-            throw new ChannelException((string) $error);
+            throw ChannelException::from($error);
         }
 
         return $value;
@@ -95,7 +95,7 @@ class Sender
             $context,
             function (array $response) use (&$sendId, &$requestId, $waiter): void {
                 if (array_key_exists('error', $response) && $response['error'] !== null) {
-                    $waiter->reject((string) $response['error']);
+                    $waiter->reject($response['error']);
                 } else {
                     $waiter->resolve($response['body'] ?? null);
                 }
@@ -177,7 +177,7 @@ class Sender
             $context,
             function (array $response) use ($event, $waiter): void {
                 if (array_key_exists('error', $response) && $response['error'] !== null) {
-                    $waiter->reject((string) $response['error']);
+                    $waiter->reject($response['error']);
                     return;
                 }
 

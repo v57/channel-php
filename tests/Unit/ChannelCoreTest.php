@@ -320,8 +320,9 @@ final class ChannelCoreTest extends TestCase
         self::assertSame([], $channel->requests);
     }
 
-    public function testSubscriptionTopicAndBodyCanBothReplaceTopicFormatter(): void
+    public function testSubscriptionBodySetsBodyFormatterNotTopic(): void
     {
+        // TS 6d42247: body() sets the body formatter; topic() keeps formatting the topic.
         $subscription = new Subscription();
         $events = [];
 
@@ -332,8 +333,55 @@ final class ChannelCoreTest extends TestCase
         $subscription->topic(static fn(string $body): string => 'topic-' . $body);
         $subscription->body(static fn(string $body): string => 'body-' . $body);
         $subscription->send('x', 'payload');
+        $subscription->send('y');
 
-        self::assertSame([['topic' => 'body-x', 'body' => 'payload']], $events);
+        self::assertSame([
+            ['topic' => 'topic-x', 'body' => 'payload'],
+            ['topic' => 'topic-y', 'body' => 'body-y'],
+        ], $events);
+    }
+
+    public function testSubscriptionPublishDropsOnlyJsFalsyBodies(): void
+    {
+        // TS: `if (!body) return` drops undefined/null/false/0/NaN/""; keeps [], {}, "0".
+        $subscription = new Subscription();
+        $bodies = [];
+        $subscription->publishers[] = static function (SubscriptionEvent $event) use (&$bodies): void {
+            $bodies[] = $event->body;
+        };
+
+        foreach ([null, false, 0, 0.0, NAN, '', [], ['a' => 1], '0', true, 1, 'a'] as $body) {
+            $subscription->publish('t', $body);
+        }
+
+        self::assertSame([[], ['a' => 1], '0', true, 1, 'a'], $bodies);
+    }
+
+    public function testErrorObjectsAreStringifiedAsJson(): void
+    {
+        self::assertSame('{"code":500,"message":"nope"}', \ChannelPhp\ChannelException::messageOf(['code' => 500, 'message' => 'nope']));
+        self::assertSame('boom', \ChannelPhp\ChannelException::messageOf('boom'));
+        self::assertSame('42', \ChannelPhp\ChannelException::messageOf(42));
+    }
+
+    public function testDisconnectFailsPendingRequestsOfThatSender(): void
+    {
+        $channel = new Channel();
+        $sender = $channel->process();
+        $other = $channel->process();
+        $responses = [];
+        $channel->makeRequest('p', null, null, static function (array $r) use (&$responses): void {
+            $responses[] = $r;
+        }, $sender);
+        $channel->makeRequest('q', null, null, static function (array $r) use (&$responses): void {
+            $responses[] = $r;
+        }, $other);
+
+        $channel->disconnect(null, $sender);
+
+        self::assertCount(1, $responses);
+        self::assertSame('disconnected', $responses[0]['error']);
+        self::assertCount(1, $channel->requests);
     }
 
     public function testSubscribeWaitsForAsyncBodyResultBeforeResponding(): void

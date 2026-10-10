@@ -46,10 +46,9 @@ final class Subscription
         $this->_topic = $make;
     }
 
-    // Keep TS quirk for strict parity.
     public function body(callable $make): void
     {
-        $this->_topic = $make;
+        $this->_body = $make;
     }
 
     public function formatTopic(mixed $request): string
@@ -86,9 +85,22 @@ final class Subscription
         $this->publish($topic, $payload);
     }
 
+    /**
+     * TS drops every JS-falsy body (`if (!body) return`): null, false, 0, NaN and "".
+     * Arrays (decoded JSON objects/arrays, even empty) and "0" are truthy in JS, so they are published.
+     */
+    public static function isJsFalsy(mixed $body): bool
+    {
+        return $body === null
+            || $body === false
+            || $body === ''
+            || $body === 0
+            || (is_float($body) && ($body == 0.0 || is_nan($body)));
+    }
+
     public function publish(string $topic, mixed $body = null): void
     {
-        if (!$body) {
+        if (self::isJsFalsy($body)) {
             return;
         }
 

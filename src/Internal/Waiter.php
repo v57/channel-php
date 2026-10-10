@@ -63,7 +63,7 @@ final class Waiter
             if ($this->error instanceof Throwable) {
                 throw $this->error;
             }
-            throw new ChannelException((string) $this->error);
+            throw ChannelException::from($this->error);
         }
 
         return $this->value;

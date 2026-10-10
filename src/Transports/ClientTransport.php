@@ -18,7 +18,8 @@ final class ClientTransport
         $headers = $options['headers'] ?? null;
         $onConnect = $options['onConnect'] ?? null;
 
-        $ws = new WebSocketClient($target, $headers);
+        $maxPayload = (int) ($options['maxPayload'] ?? WebSocketClient::DEFAULT_MAX_PAYLOAD);
+        $ws = new WebSocketClient($target, $headers, $maxPayload);
         $topics = [];
         $sender = makeSender($channel, $ws);
         $state = new \stdClass();
@@ -69,10 +70,20 @@ final class ClientTransport
         };
 
         $ws->setOnClose(static function () use ($ws, $cleanupPublishers, $channel, $state, $sender): void {
+            $closeError = $ws->closeError();
             if (!$ws->isRunning()) {
                 $cleanupPublishers();
+            } elseif (!$ws->wasOpen() && $closeError === null) {
+                // Address not reachable yet: keep pending requests, they are re-sent on connect.
+                return;
             }
+            if ($closeError !== null) {
+                $channel->failRequests($sender, $closeError);
+            }
+            // Settles whatever is left with "disconnected" so no caller waits forever.
             $channel->disconnect($state, $sender);
+            $ws->dropPending(static fn(array $body): bool => isset($body['id']) && is_int($body['id'])
+                && !isset($channel->requests[$body['id']]));
         });
 
         $ws->setOnMessage(static function (mixed $message) use ($channel, $controller): void {

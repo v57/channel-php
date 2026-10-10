@@ -5,8 +5,10 @@ namespace ChannelPhp\Transports;
 
 use ChannelPhp\ConnectionInterface;
 use ChannelPhp\Internal\JsonCodec;
+use ChannelPhp\Internal\WebSocketFrameReader;
+use ChannelPhp\Internal\WebSocketProtocolException;
 use OpenSwoole\Coroutine;
-use OpenSwoole\Coroutine\Http\Client as CoHttpClient;
+use OpenSwoole\Coroutine\Client as CoClient;
 
 final class WebSocketClient implements ConnectionInterface
 {
@@ -28,7 +30,22 @@ final class WebSocketClient implements ConnectionInterface
     private bool $isConnected = false;
     private bool $isRunning = true;
 
-    private ?CoHttpClient $ws = null;
+    /** Connected socket (OpenSwoole\Coroutine\Client) once the handshake succeeded. */
+    private ?object $ws = null;
+
+    /** Largest message accepted from the server: 16 MiB, the TS/Bun default. */
+    public const DEFAULT_MAX_PAYLOAD = 16 * 1024 * 1024;
+    private const MAX_HANDSHAKE_BYTES = 64 * 1024;
+
+    // For the connection attempt that just ended (read from the close hook): whether it got past
+    // the handshake, and why it failed (null for a plain close or an unreachable address).
+    private bool $wasOpen = false;
+    private ?string $closeError = null;
+
+    // Writes are serialized: a coroutine that finds another one mid-write queues its frame.
+    private bool $writing = false;
+    /** @var list<string> */
+    private array $writeQueue = [];
 
     private mixed $onOpen = null;
     private mixed $onClose = null;
@@ -37,6 +54,7 @@ final class WebSocketClient implements ConnectionInterface
     public function __construct(
         private readonly string $address,
         private readonly mixed $headersProvider = null,
+        private readonly int $maxPayload = self::DEFAULT_MAX_PAYLOAD,
     ) {
         if (Coroutine::getCid() < 0 || !function_exists('go')) {
             throw new \RuntimeException('WebSocketClient requires OpenSwoole coroutine context.');
@@ -68,6 +86,26 @@ final class WebSocketClient implements ConnectionInterface
     public function isConnected(): bool
     {
         return $this->isConnected;
+    }
+
+    public function wasOpen(): bool
+    {
+        return $this->wasOpen;
+    }
+
+    public function closeError(): ?string
+    {
+        return $this->closeError;
+    }
+
+    /** Forget queued requests matching $predicate (e.g. ones that were just failed). */
+    public function dropPending(callable $predicate): void
+    {
+        foreach ($this->pending as $id => $body) {
+            if (is_array($body) && $predicate($body)) {
+                unset($this->pending[$id]);
+            }
+        }
     }
 
     public function send(array $body): int
@@ -207,17 +245,51 @@ final class WebSocketClient implements ConnectionInterface
         }
 
         try {
-            $this->ws->push(JsonCodec::encode($body));
+            $this->writeFrame(WebSocketFrameReader::encode(JsonCodec::encode($body)));
         } catch (\Throwable) {
+        }
+    }
+
+    private function writeFrame(string $frame): void
+    {
+        if ($this->writing) {
+            $this->writeQueue[] = $frame;
+            return;
+        }
+
+        $this->writing = true;
+        try {
+            $ws = $this->ws;
+            $data = $frame;
+            while ($ws !== null) {
+                if ($ws->send($data) === false) {
+                    $this->writeQueue = [];
+                    break;
+                }
+                if ($this->writeQueue === []) {
+                    break;
+                }
+                $data = implode('', $this->writeQueue);
+                $this->writeQueue = [];
+            }
+        } finally {
+            $this->writing = false;
         }
     }
 
     private function runLoop(): void
     {
         while ($this->isRunning) {
-            $this->connectAndRun();
+            $this->wasOpen = false;
+            $this->closeError = null;
+            try {
+                $this->connectAndRun();
+            } catch (\Throwable $error) {
+                $this->closeError ??= $error->getMessage() !== '' ? $error->getMessage() : get_class($error);
+            }
             $this->isConnected = false;
             $this->ws = null;
+            $this->writeQueue = [];
 
             if ($this->onClose !== null) {
                 ($this->onClose)();
@@ -232,78 +304,198 @@ final class WebSocketClient implements ConnectionInterface
     private function connectAndRun(): void
     {
         $parts = parse_url($this->address);
-        if ($parts === false) {
+        if ($parts === false || !isset($parts['host'])) {
             $this->isRunning = false;
+            $this->closeError = 'invalid address: ' . $this->address;
             return;
         }
 
         $scheme = strtolower((string) ($parts['scheme'] ?? 'ws'));
-        $host = (string) ($parts['host'] ?? '127.0.0.1');
+        $host = (string) $parts['host'];
         $port = (int) ($parts['port'] ?? ($scheme === 'wss' ? 443 : 80));
         $path = (string) ($parts['path'] ?? '/');
         if (isset($parts['query'])) {
             $path .= '?' . $parts['query'];
         }
 
-        $client = new CoHttpClient($host, $port, $scheme === 'wss');
-        $client->set(['timeout' => 1.0]);
-
-        $headers = $this->resolveHeaders();
-        if ($headers !== []) {
-            $client->setHeaders($headers);
-        }
-
-        $ok = $client->upgrade($path);
-        if (!$ok) {
-            $statusCode = property_exists($client, 'statusCode') ? (int) $client->statusCode : 0;
-            if ($statusCode === 101) {
+        $type = SWOOLE_SOCK_TCP;
+        if ($scheme === 'wss') {
+            if (!defined('SWOOLE_SSL')) {
                 $this->isRunning = false;
+                $this->closeError = 'wss:// needs OpenSwoole built with OpenSSL';
+                return;
             }
-            $client->close();
-            return;
+            $type |= constant('SWOOLE_SSL');
         }
 
-        $this->ws = $client;
-        $this->isConnected = true;
-
-        if ($this->onOpen !== null) {
-            ($this->onOpen)();
-        }
-
-        if ($this->pending !== []) {
-            $this->sendNow(array_values($this->pending));
-        }
-
-        while ($this->isRunning) {
-            $frame = $client->recv(1.0);
-            if ($frame === false) {
-                $errCode = property_exists($client, 'errCode') ? (int) $client->errCode : 0;
-                if ($errCode === SOCKET_ETIMEDOUT) {
-                    continue;
-                }
-                break;
-            }
-
-            if (!is_object($frame) || !property_exists($frame, 'data')) {
-                break;
-            }
-
-            if ($frame->data === '' || $frame->data === null) {
-                continue;
-            }
-
-            try {
-                $value = JsonCodec::decode((string) $frame->data);
-                if ($this->onMessage !== null) {
-                    ($this->onMessage)($value);
-                }
-            } catch (\Throwable) {
-                break;
-            }
+        $client = new CoClient($type);
+        if (!$client->connect($host, $port, 1.0)) {
+            return; // not reachable (yet): pending requests are kept and re-sent on connect
         }
 
         try {
-            $client->close();
+            $reader = new WebSocketFrameReader($this->maxPayload);
+            if (!$this->handshake($client, $host, $port, $path, $reader)) {
+                return;
+            }
+
+            $this->ws = $client;
+            $this->isConnected = true;
+            $this->wasOpen = true;
+
+            if ($this->onOpen !== null) {
+                ($this->onOpen)();
+            }
+
+            if ($this->pending !== []) {
+                $this->sendNow(array_values($this->pending));
+            }
+
+            $this->readLoop($client, $reader);
+        } finally {
+            try {
+                $client->close();
+            } catch (\Throwable) {
+            }
+        }
+    }
+
+    private function handshake(object $client, string $host, int $port, string $path, WebSocketFrameReader $reader): bool
+    {
+        $key = base64_encode(random_bytes(16));
+        $request = "GET {$path} HTTP/1.1\r\n"
+            . "Host: {$host}:{$port}\r\n"
+            . "Upgrade: websocket\r\n"
+            . "Connection: Upgrade\r\n"
+            . "Sec-WebSocket-Key: {$key}\r\n"
+            . "Sec-WebSocket-Version: 13\r\n";
+        foreach ($this->resolveHeaders() as $name => $value) {
+            $request .= "{$name}: {$value}\r\n";
+        }
+        $request .= "\r\n";
+
+        if ($client->send($request) === false) {
+            return false;
+        }
+
+        $response = '';
+        $deadline = microtime(true) + 5.0;
+        while (($end = strpos($response, "\r\n\r\n")) === false) {
+            if (strlen($response) > self::MAX_HANDSHAKE_BYTES || microtime(true) > $deadline) {
+                $this->closeError = 'websocket handshake failed: no valid response';
+                return false;
+            }
+            $chunk = $client->recv(1.0);
+            if ($chunk === false && (int) $client->errCode === SOCKET_ETIMEDOUT) {
+                continue;
+            }
+            if (!is_string($chunk) || $chunk === '') {
+                // Closed before answering: treated like an unreachable address (retry).
+                return false;
+            }
+            $response .= $chunk;
+        }
+
+        $head = substr($response, 0, $end);
+        $lines = explode("\r\n", $head);
+        if (preg_match('#^HTTP/1\.[01] (\d{3})#', $lines[0] ?? '', $match) !== 1) {
+            $this->closeError = 'websocket handshake failed: invalid HTTP response';
+            return false;
+        }
+        if ($match[1] !== '101') {
+            $this->closeError = 'websocket handshake failed: HTTP ' . $match[1];
+            return false;
+        }
+
+        $accept = null;
+        foreach (array_slice($lines, 1) as $line) {
+            $colon = strpos($line, ':');
+            if ($colon !== false && strtolower(trim(substr($line, 0, $colon))) === 'sec-websocket-accept') {
+                $accept = trim(substr($line, $colon + 1));
+            }
+        }
+        $expected = base64_encode(sha1($key . '258EAFA5-E914-47DA-95CA-C5AB0DC85B11', true));
+        if ($accept !== $expected) {
+            $this->closeError = 'websocket handshake failed: invalid Sec-WebSocket-Accept';
+            return false;
+        }
+
+        $reader->push((string) substr($response, $end + 4));
+        return true;
+    }
+
+    private function readLoop(object $client, WebSocketFrameReader $reader): void
+    {
+        while ($this->isRunning) {
+            try {
+                while (($frame = $reader->next()) !== null) {
+                    if (!$this->handleFrame($frame)) {
+                        return;
+                    }
+                }
+            } catch (WebSocketProtocolException $error) {
+                $this->closeError = 'connection closed: ' . $error->closeCode . ' ' . $error->getMessage();
+                $this->sendClose($error->closeCode);
+                return;
+            }
+
+            $chunk = $client->recv(1.0);
+            if ($chunk === false) {
+                if ((int) $client->errCode === SOCKET_ETIMEDOUT) {
+                    continue;
+                }
+                return;
+            }
+            if ($chunk === '') {
+                return; // peer closed the socket
+            }
+            $reader->push($chunk);
+        }
+    }
+
+    /** @param array{opcode:int, data:string} $frame */
+    private function handleFrame(array $frame): bool
+    {
+        switch ($frame['opcode']) {
+            case WebSocketFrameReader::OPCODE_CLOSE:
+                $code = strlen($frame['data']) >= 2 ? unpack('n', $frame['data'])[1] : 1005;
+                if ($code !== 1000 && $code !== 1001 && $code !== 1005) {
+                    $this->closeError = 'connection closed: ' . $code;
+                }
+                $this->sendClose(1000);
+                return false;
+            case WebSocketFrameReader::OPCODE_PING:
+                $this->writeFrame(WebSocketFrameReader::encode($frame['data'], WebSocketFrameReader::OPCODE_PONG));
+                return true;
+            case WebSocketFrameReader::OPCODE_PONG:
+                return true;
+        }
+
+        // Text, or binary treated as text (unchanged behaviour).
+        if ($frame['data'] === '') {
+            return true;
+        }
+
+        try {
+            $value = JsonCodec::decode($frame['data']);
+        } catch (\Throwable $error) {
+            // Same as TS: a peer that sends invalid JSON gets disconnected; pending calls fail
+            // with this error (see ClientTransport) instead of waiting forever.
+            $this->closeError = 'invalid message from server: ' . $error->getMessage();
+            $this->sendClose(1003);
+            return false;
+        }
+
+        if ($this->onMessage !== null) {
+            ($this->onMessage)($value);
+        }
+        return true;
+    }
+
+    private function sendClose(int $code): void
+    {
+        try {
+            $this->writeFrame(WebSocketFrameReader::encode(pack('n', $code), WebSocketFrameReader::OPCODE_CLOSE));
         } catch (\Throwable) {
         }
     }
@@ -322,10 +514,15 @@ final class WebSocketClient implements ConnectionInterface
 
         $result = [];
         foreach ($headers as $key => $value) {
-            if (!is_string($key) || $value === null || $value === '') {
+            if (!is_string($key) || $value === null || $value === '' || !is_scalar($value)) {
                 continue;
             }
-            $result[$key] = (string) $value;
+            $value = (string) $value;
+            // Refuse header injection: names are tokens, values have no CR/LF.
+            if (preg_match('/^[!#$%&\'*+.^_`|~0-9A-Za-z-]+$/', $key) !== 1 || strpbrk($value, "\r\n") !== false) {
+                continue;
+            }
+            $result[$key] = $value;
         }
 
         return $result;

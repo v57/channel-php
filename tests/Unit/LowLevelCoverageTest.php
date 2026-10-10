@@ -14,7 +14,6 @@ use ChannelPhp\TopicSubscriptions;
 use ChannelPhp\Internal\JsonCodec;
 use ChannelPhp\Transports\WebSocketClient;
 use ChannelPhp\Internal\Waiter;
-use OpenSwoole\Coroutine\Http\Client as CoHttpClient;
 use PHPUnit\Framework\TestCase;
 
 final class LowLevelCoverageTest extends TestCase
@@ -321,22 +320,18 @@ final class LowLevelCoverageTest extends TestCase
             'x-number' => 7,
         ]);
 
-        $fake = new class extends CoHttpClient {
+        $fake = new class {
             public array $sent = [];
             public bool $closed = false;
             public bool $throwOnPush = false;
 
-            public function __construct()
-            {
-            }
-
-            public function push($payload, $opcode = null, $flags = null)
+            public function send(string $payload): int|false
             {
                 if ($this->throwOnPush) {
                     throw new \RuntimeException('push failed');
                 }
                 $this->sent[] = $payload;
-                return true;
+                return strlen($payload);
             }
 
             public function close()
@@ -380,6 +375,14 @@ final class LowLevelCoverageTest extends TestCase
         $resolve->setAccessible(true);
         $headers = $resolve->invoke($client);
         self::assertSame(['token' => 'abc', 'x-number' => '7'], $headers);
+
+        // Header injection is refused.
+        $clientInjected = $this->newWebSocketClient(static fn(): array => [
+            'ok' => 'yes',
+            "bad\r\nname" => 'x',
+            'evil' => "x\r\nHost: other",
+        ]);
+        self::assertSame(['ok' => 'yes'], $resolve->invoke($clientInjected));
 
         $clientBad = $this->newWebSocketClient(static fn(): string => 'bad');
         self::assertSame([], $resolve->invoke($clientBad));
@@ -449,6 +452,11 @@ final class LowLevelCoverageTest extends TestCase
         $this->setPrivate($client, 'onMessage', null);
         $this->setPrivate($client, 'address', $address);
         $this->setPrivate($client, 'headersProvider', $headersProvider);
+        $this->setPrivate($client, 'maxPayload', WebSocketClient::DEFAULT_MAX_PAYLOAD);
+        $this->setPrivate($client, 'wasOpen', false);
+        $this->setPrivate($client, 'closeError', null);
+        $this->setPrivate($client, 'writing', false);
+        $this->setPrivate($client, 'writeQueue', []);
 
         return $client;
     }
