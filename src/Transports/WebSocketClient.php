@@ -40,6 +40,7 @@ final class WebSocketClient implements ConnectionInterface
     // For the connection attempt that just ended (read from the close hook): whether it got past
     // the handshake, and why it failed (null for a plain close or an unreachable address).
     private bool $wasOpen = false;
+    private int $attempts = 0;
     private ?string $closeError = null;
 
     // Writes are serialized: a coroutine that finds another one mid-write queues its frame.
@@ -277,6 +278,15 @@ final class WebSocketClient implements ConnectionInterface
         }
     }
 
+    /**
+     * Microseconds before reconnect attempt $attempt (0 = first retry): 100 ms doubling up to 5 s, scaled to
+     * 50-100% by $jitter (0..1) so clients don't retry in lockstep. Same numbers as the TypeScript client.
+     */
+    public static function reconnectDelay(int $attempt, float $jitter): int
+    {
+        return (int) (min(5_000_000, 100_000 * 2 ** min($attempt, 16)) * (0.5 + $jitter / 2));
+    }
+
     private function runLoop(): void
     {
         while ($this->isRunning) {
@@ -296,7 +306,7 @@ final class WebSocketClient implements ConnectionInterface
             }
 
             if ($this->isRunning) {
-                Coroutine::usleep(100_000);
+                Coroutine::usleep(self::reconnectDelay($this->attempts++, mt_rand() / mt_getrandmax()));
             }
         }
     }
@@ -342,6 +352,7 @@ final class WebSocketClient implements ConnectionInterface
             $this->ws = $client;
             $this->isConnected = true;
             $this->wasOpen = true;
+            $this->attempts = 0;
 
             if ($this->onOpen !== null) {
                 ($this->onOpen)();
