@@ -14,7 +14,13 @@ pecl install simdjson
 pecl install pcov
 ```
 
-# Install Dependencies
+# Dependencies
+
+- [OpenSwoole](https://openswoole.com) (`ext-openswoole`, required): coroutines, the WebSocket server and the client
+  sockets.
+- [simdjson](https://pecl.php.net/package/simdjson) (`ext-simdjson`, optional): faster JSON decoding when installed;
+  `ext-json` otherwise.
+- `bun`, `lcov` and `pcov` above are for the interop tests and coverage only.
 
 ```bash
 composer install
