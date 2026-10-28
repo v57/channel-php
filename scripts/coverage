@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# In the Hub checkout this runs in its toolchain container (HubTools/hub-run); elsewhere it runs here.
+hub_run="$(dirname "$0")/../../../HubTools/hub-run"
+[[ -n "${HUB_TOOLCHAIN:-}" || ! -x "$hub_run" ]] || exec "$hub_run" bash "$0" "$@"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PHP_BIN="$("$ROOT/scripts/find-php")"
-COMPOSER_BIN="${COMPOSER_BIN:-/opt/homebrew/bin/composer}"
+COMPOSER_BIN="${COMPOSER_BIN:-$(command -v composer)}"
 
 if [[ ! -f "$ROOT/vendor/autoload.php" ]]; then
   "$PHP_BIN" "$COMPOSER_BIN" install --no-interaction --working-dir "$ROOT"

@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Prints the first PHP binary that has ext-openswoole loaded: $PHP_BIN, then the Homebrew
-# php@8.4 / php@8.3 kegs, then `php` on PATH. (Homebrew's default `php` is 8.5 without openswoole.)
+# Prints the first PHP binary that has ext-openswoole loaded: $PHP_BIN, then `php` on PATH.
 set -euo pipefail
 
-for candidate in "${PHP_BIN:-}" /opt/homebrew/opt/php@8.4/bin/php /opt/homebrew/opt/php@8.3/bin/php php; do
+for candidate in "${PHP_BIN:-}" php; do
   [[ -z "$candidate" ]] && continue
   command -v "$candidate" >/dev/null 2>&1 || continue
   if "$candidate" --ri openswoole >/dev/null 2>&1; then
@@ -12,5 +11,5 @@ for candidate in "${PHP_BIN:-}" /opt/homebrew/opt/php@8.4/bin/php /opt/homebrew/
   fi
 done
 
-echo "No PHP with ext-openswoole found (set PHP_BIN, or: brew install php@8.4 && pecl install openswoole)." >&2
+echo "No PHP with ext-openswoole found (set PHP_BIN; the Hub toolchain image has one)." >&2
 exit 1
