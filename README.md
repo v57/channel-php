@@ -5,6 +5,9 @@
 
 Powerful and lightweight communication built for modern language. PHP implementation of Channel: run a websocket server, a websocket client, or communicate inside your process.
 
+WebSocket only: PHP has no usable QUIC library. Languages with QUIC: TypeScript, Go, Swift, C#, Rust, Python, Elixir,
+Java, Kotlin, C and Zig (`channel/docs/quic.md`).
+
 # Installation (macOS/Homebrew)
 
 ```bash
