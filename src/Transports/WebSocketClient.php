@@ -338,6 +338,13 @@ final class WebSocketClient implements ConnectionInterface
             $type |= constant('SWOOLE_SSL');
         }
 
+        // Before dialing: the provider may take a while (it can ask the server something first, on its own
+        // connection), and an attempt it holds back opens nothing.
+        $headers = $this->resolveHeaders();
+        if (!$this->isRunning) {
+            return;
+        }
+
         $client = new CoClient($type);
         if (!$client->connect($host, $port, 1.0)) {
             return; // not reachable (yet): pending requests are kept and re-sent on connect
@@ -345,7 +352,7 @@ final class WebSocketClient implements ConnectionInterface
 
         try {
             $reader = new WebSocketFrameReader($this->maxPayload);
-            if (!$this->handshake($client, $host, $port, $path, $reader)) {
+            if (!$this->handshake($client, $host, $port, $path, $reader, $headers)) {
                 return;
             }
 
@@ -371,7 +378,8 @@ final class WebSocketClient implements ConnectionInterface
         }
     }
 
-    private function handshake(object $client, string $host, int $port, string $path, WebSocketFrameReader $reader): bool
+    /** @param array<string, string> $headers */
+    private function handshake(object $client, string $host, int $port, string $path, WebSocketFrameReader $reader, array $headers): bool
     {
         $key = base64_encode(random_bytes(16));
         $request = "GET {$path} HTTP/1.1\r\n"
@@ -380,7 +388,7 @@ final class WebSocketClient implements ConnectionInterface
             . "Connection: Upgrade\r\n"
             . "Sec-WebSocket-Key: {$key}\r\n"
             . "Sec-WebSocket-Version: 13\r\n";
-        foreach ($this->resolveHeaders() as $name => $value) {
+        foreach ($headers as $name => $value) {
             $request .= "{$name}: {$value}\r\n";
         }
         $request .= "\r\n";
