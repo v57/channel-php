@@ -384,6 +384,60 @@ final class ChannelCoreTest extends TestCase
         self::assertCount(1, $channel->requests);
     }
 
+    public function testResponsesSettleOnlyRequestsMadeThroughTheirConnection(): void
+    {
+        $channel = new Channel();
+        $sender = $channel->process();
+        $other = $channel->process();
+        $controller = static fn($sender): Controller => new Controller(
+            responseImpl: static fn(array $response): bool => false,
+            subscribeImpl: static fn(string $topic): bool => false,
+            unsubscribeImpl: static fn(string $topic): bool => false,
+            eventImpl: static fn(string $topic, mixed $event): bool => false,
+            sender: $sender,
+            state: [],
+        );
+
+        $responses = [];
+        $record = static function (string $name) use (&$responses): \Closure {
+            return static function (array $response) use (&$responses, $name): void {
+                $responses[] = [$name, $response];
+            };
+        };
+        $call = $channel->makeRequest('call', null, null, $record('call'), $sender);
+        $stream = $channel->makeStream('stream', null, null, $record('stream'), $sender);
+        $sub = $channel->makeSubscription('sub', null, null, $record('sub'), $sender);
+
+        // Ids are one counter for every connection: another one answers, feeds and ends nothing it wasn't asked
+        $forged = [];
+        foreach ([$call['id'], $stream['id'], $sub['id']] as $id) {
+            $forged[] = ['id' => $id, 'topic' => 'x', 'body' => 'forged'];
+            $forged[] = ['id' => $id, 'body' => 'forged'];
+            $forged[] = ['id' => $id, 'error' => 'forged'];
+            $forged[] = ['id' => $id, 'done' => true];
+        }
+        $channel->receive($forged, $controller($other));
+
+        self::assertSame([], $responses);
+        self::assertCount(3, $channel->requests);
+
+        $channel->receive([
+            ['id' => $call['id'], 'body' => 'real'],
+            ['id' => $stream['id'], 'body' => 'real'],
+            ['id' => $sub['id'], 'topic' => 'real/topic'],
+        ], $controller($sender));
+
+        self::assertSame([
+            ['call', ['id' => $call['id'], 'body' => 'real']],
+            ['stream', ['id' => $stream['id'], 'body' => 'real']],
+            ['sub', ['id' => $sub['id'], 'topic' => 'real/topic']],
+        ], $responses);
+        self::assertSame([$stream['id']], array_keys($channel->requests));
+
+        $sender->stop();
+        $other->stop();
+    }
+
     public function testSubscribeWaitsForAsyncBodyResultBeforeResponding(): void
     {
         $news = new Subscription();

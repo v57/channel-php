@@ -219,7 +219,7 @@ final class ChannelBranchCoverageTest extends TestCase
 
             $pending = $channel->makeRequest('x', null, null, static function (array $response) use (&$requestResponse): void {
                 $requestResponse = $response;
-            });
+            }, $sender);
 
             $channel->receiveOne(['id' => $pending['id'], 'topic' => 'some/topic', 'body' => 0], $controller);
 

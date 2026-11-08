@@ -219,7 +219,7 @@ final class Channel
         }
 
         if (array_key_exists('id', $some)) {
-            $this->handleResponse($some);
+            $this->handleResponse($some, $controller);
         }
     }
 
@@ -453,9 +453,10 @@ final class Channel
     {
         $id = $some['id'] ?? null;
         if ($id !== null) {
+            // Only from the connection the subscription went to: ids are one counter for every connection
             $request = $this->requests[(int) $id] ?? null;
-            unset($this->requests[(int) $id]);
-            if ($request instanceof PendingRequest) {
+            if ($request instanceof PendingRequest && $request->sender === $controller->sender) {
+                unset($this->requests[(int) $id]);
                 ($request->response)($some);
             }
         }
@@ -465,11 +466,13 @@ final class Channel
         }
     }
 
-    private function handleResponse(array $some): void
+    private function handleResponse(array $some, Controller $controller): void
     {
+        // A response answers a request only on the connection it went to. Ids are one counter for every connection,
+        // so another peer of a server could otherwise answer calls the server made to someone else.
         $id = (int) $some['id'];
         $request = $this->requests[$id] ?? null;
-        if (!$request instanceof PendingRequest) {
+        if (!$request instanceof PendingRequest || $request->sender !== $controller->sender) {
             return;
         }
 
