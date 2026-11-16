@@ -11,8 +11,7 @@ const client = new Channel()
 const values: unknown[] = []
 for await (const value of client.values('count')) values.push(value)
 const { promise: event, resolve } = Promise.withResolvers()
-// A PHP server's subscribe reply carries `"body": null` (TS leaves it out), which TS hands over as a snapshot
-const subscription = await client.subscribe('ticks', 'a', body => body !== null && resolve(body))
+const subscription = await client.subscribe('ticks', 'a', resolve)
 await client.send('tick')
 const result = {
   hello: await client.send('hello'),

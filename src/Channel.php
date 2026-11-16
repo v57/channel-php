@@ -404,11 +404,7 @@ final class Channel
             if ($body instanceof AsyncResult) {
                 if ($body->isResolved()) {
                     $controller->subscribe($topic);
-                    $response = ['topic' => $topic, 'body' => $body->resolvedValue()];
-                    if ($id !== null) {
-                        $response['id'] = $id;
-                    }
-                    $controller->response($response);
+                    $controller->response(self::subscribed($topic, $body->resolvedValue(), $id));
                     return;
                 }
 
@@ -422,11 +418,7 @@ final class Channel
                 $body
                     ->then(function (mixed $value) use ($topic, $id, $controller): void {
                         $controller->subscribe($topic);
-                        $response = ['topic' => $topic, 'body' => $value];
-                        if ($id !== null) {
-                            $response['id'] = $id;
-                        }
-                        $controller->response($response);
+                        $controller->response(self::subscribed($topic, $value, $id));
                     })
                     ->catch(function (mixed $error) use ($id, $controller): void {
                         if ($id !== null) {
@@ -437,16 +429,29 @@ final class Channel
             }
 
             $controller->subscribe($topic);
-            $response = ['topic' => $topic, 'body' => $body];
-            if ($id !== null) {
-                $response['id'] = $id;
-            }
-            $controller->response($response);
+            $controller->response(self::subscribed($topic, $body, $id));
         } catch (\Throwable $error) {
             if ($id !== null) {
                 $controller->response(['id' => $id, 'error' => $error->getMessage()]);
             }
         }
+    }
+
+    /**
+     * The reply to a subscription. Like TS `subscribed()`, it carries `body` only when there is a snapshot:
+     * a TS client calls the event handler whenever the reply has `body`, so a `null` would reach it as a
+     * spurious first event. TS can't tell a `null` snapshot from none after JSON, so `null` is left out too.
+     */
+    private static function subscribed(string $topic, mixed $body, mixed $id): array
+    {
+        $response = ['topic' => $topic];
+        if ($body !== null) {
+            $response['body'] = $body;
+        }
+        if ($id !== null) {
+            $response['id'] = $id;
+        }
+        return $response;
     }
 
     private function handleTopic(array $some, Controller $controller): void

@@ -470,6 +470,48 @@ final class ChannelCoreTest extends TestCase
         $sender->stop();
     }
 
+    public function testSubscribeReplyLeavesOutBodyWithoutSnapshot(): void
+    {
+        // TS subscribed(): `body` only when there is a snapshot, or a TS client gets a `null` event first
+        $plain = new Subscription();
+        $plain->topic(static fn(): string => 'plain');
+        $nullAsync = new Subscription();
+        $nullAsync->topic(static fn(): string => 'async');
+        $nullAsync->_body = static fn(): AsyncResult => AsyncResult::resolved(null);
+        $falsy = new Subscription();
+        $falsy->topic(static fn(): string => 'falsy');
+        $falsy->_body = static fn(): int => 0;
+
+        $channel = (new Channel())->events(['plain' => $plain, 'async' => $nullAsync, 'falsy' => $falsy]);
+        $sender = $channel->process();
+
+        $responses = [];
+        $controller = new Controller(
+            responseImpl: static function (array $response) use (&$responses): void {
+                $responses[] = $response;
+            },
+            subscribeImpl: static fn(string $topic): bool => false,
+            unsubscribeImpl: static fn(string $topic): bool => false,
+            eventImpl: static fn(string $topic, mixed $event): bool => false,
+            sender: $sender,
+            state: [],
+        );
+
+        $channel->receiveOne(['id' => 1, 'sub' => 'plain'], $controller);
+        $channel->receiveOne(['id' => 2, 'sub' => 'async'], $controller);
+        $channel->receiveOne(['id' => 3, 'sub' => 'falsy'], $controller);
+
+        self::assertSame([
+            ['topic' => 'plain/plain', 'id' => 1],
+            ['topic' => 'async/async', 'id' => 2],
+            ['topic' => 'falsy/falsy', 'body' => 0, 'id' => 3],
+        ], $responses);
+        self::assertArrayNotHasKey('body', $responses[0]);
+        self::assertArrayNotHasKey('body', $responses[1]);
+
+        $sender->stop();
+    }
+
     public function testReceiveOneHandlesAsyncPostRejection(): void
     {
         $channel = (new Channel())->post('fails', static fn(): AsyncResult => AsyncResult::rejected('boom'));
