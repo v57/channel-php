@@ -19,7 +19,11 @@ final class ClientTransport
         $onConnect = $options['onConnect'] ?? null;
 
         $maxPayload = (int) ($options['maxPayload'] ?? WebSocketClient::DEFAULT_MAX_PAYLOAD);
-        $ws = new WebSocketClient($target, $headers, $maxPayload);
+        // quic:// (experimental): needs ext-ffi and OpenSSL 3.5+, checked here so a mistake throws right away
+        $dialer = str_starts_with(strtolower($target), 'quic://')
+            ? \ChannelPhp\Quic\QuicLink::dialer($target, (array) ($options['quic'] ?? []), $maxPayload)
+            : null;
+        $ws = new WebSocketClient($target, $headers, $maxPayload, $dialer);
         $topics = [];
         $sender = makeSender($channel, $ws);
         $state = new \stdClass();

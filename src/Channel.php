@@ -636,6 +636,16 @@ final class Channel
         return ServerTransport::listen($this, $address, $options);
     }
 
+    /**
+     * Channel over QUIC (experimental): listens on UDP $address with `cert` and `key` (PEM) in $options. Needs
+     * ext-ffi and OpenSSL 3.5+, and runs in this process: call it inside a coroutine. Clients use
+     * `connect('quic://host:port', ['quic' => [...]])`.
+     */
+    public function listenQuic(int|string $address, array $options): \ChannelPhp\Quic\QuicServer
+    {
+        return \ChannelPhp\Quic\QuicServer::listen($this, $address, $options);
+    }
+
     public function process(): Sender
     {
         return ProcessTransport::process($this);

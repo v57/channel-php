@@ -5,8 +5,7 @@
 
 Powerful and lightweight communication built for modern language. PHP implementation of Channel: run a websocket server, a websocket client, or communicate inside your process.
 
-WebSocket only: PHP has no usable QUIC library. Languages with QUIC: TypeScript, Go, Swift, C#, Rust, Python, Elixir,
-Java, Kotlin, C and Zig (`channel/docs/quic.md`).
+Also QUIC, experimental: a client and a server on OpenSSL 3.5's native QUIC through `ext-ffi` (see below).
 
 # Installation (macOS/Homebrew)
 
@@ -23,6 +22,8 @@ pecl install pcov
   sockets.
 - [simdjson](https://pecl.php.net/package/simdjson) (`ext-simdjson`, optional): faster JSON decoding when installed;
   `ext-json` otherwise.
+- `ext-ffi` (optional): the QUIC transport only, with `libssl`/`libcrypto` 3.5 or later at run time (Debian 13,
+  Ubuntu 25.04+, Homebrew's `openssl@3`). Nothing loads it unless a program uses `quic://` or `listenQuic`.
 - `bun`, `lcov` and `pcov` above are for the interop tests and coverage only.
 
 ```bash
@@ -62,6 +63,51 @@ $server->stop();
 
 Note: `listen()` uses `pcntl_fork` and should be called outside OpenSwoole coroutine context.
 
+# QUIC (experimental)
+
+The protocol over one QUIC stream, as in [channel/docs/quic.md](../channel/docs/quic.md): ALPN `channel/1`, TLS
+always on, the client's headers in a first `hello` frame. Same requests, streams, events and reconnects as the
+WebSocket client.
+
+```php
+<?php
+use ChannelPhp\Channel;
+use OpenSwoole\Coroutine;
+
+Coroutine::run(static function (): void {
+    // Server: QUIC has no plaintext mode, so it needs a certificate and key (PEM)
+    $server = (new Channel())
+        ->post('hello', static fn(): string => 'world')
+        ->listenQuic(4433, [
+            'cert' => file_get_contents('cert.pem'),
+            'key' => file_get_contents('key.pem'),
+            'state' => static fn(array $headers): object => (object) ['headers' => $headers],
+        ]);
+
+    // Client
+    $client = (new Channel())->connect('quic://127.0.0.1:4433', [
+        'quic' => ['ca' => file_get_contents('cert.pem')], // or 'fingerprint' => 'DD:D2:…', 'servername' => 'localhost'
+    ]);
+    echo $client->send('hello'), "\n";
+
+    $client->stop();
+    $server->stop();
+});
+```
+
+- `quic` options: `ca` trusts a self-signed certificate (the address must be in its names), `fingerprint` pins the
+  certificate's SHA-256 instead of verifying it, `servername` overrides the name sent and checked. Without them the
+  system's roots verify the server. A mistake in them, or a missing `ext-ffi`/OpenSSL 3.5, throws from `connect()`.
+- `listenQuic()` takes a port or `'host:port'` (127.0.0.1 by default) and the same `state` (built from the hello's
+  headers, names lowercased), `onConnect`, `onDisconnect` and `maxPayload` options as `listen()`. Unlike `listen()`
+  it runs in this process on OpenSwoole's reactor, so call it inside a coroutine (`Coroutine::run`, a server's
+  worker) and `stop()` it there. `port()` gives the bound port, `connectionCount()` the open connections.
+- Each connection dials from its own UDP socket. OpenSSL owns the socket; OpenSwoole's reactor watches it and a timer
+  covers OpenSSL's timeouts and the client's 15 s keepalive, so nothing polls.
+- OpenSSL can't lower the stream limits: the server resets any stream after a connection's first one.
+- Set `CHANNEL_QUIC_LIBSSL` to load OpenSSL from another path; `ffi.enable` must allow `FFI::cdef` (the CLI default
+  `preload` does). Without them QUIC throws `ChannelPhp\Quic\QuicUnavailable`.
+
 # Process transport (in-memory)
 
 ```php
@@ -85,6 +131,7 @@ $sender->stop();
 - Bun (for interop tests/benchmark fixture)
 - `ext-openswoole`
 - `ext-simdjson` (optional, fast JSON decode path)
+- `ext-ffi` and OpenSSL 3.5+ (optional, the QUIC transport)
 - `ext-pcov` (for coverage script)
 
 # Tool Versions (this environment)
@@ -158,3 +205,6 @@ Encoding uses `json_encode` with throw-on-error flags.
 - `tests/Unit`: core channel/send/values semantics
 - `tests/Interop`: PHP client against `../channel/tests/server.ts`
 - `tests/E2E`: PHP client <-> PHP server transport behavior
+- `tests/Quic`: the QUIC transport: frames, PHP client <-> PHP server, the wire rules with raw frames, the PHP client
+  against the TypeScript fixture's QUIC server (its own fixture on 2449, `CHANNEL_QUIC_TEST_PORT`), and the TypeScript
+  reference's QUIC client against the PHP server. Skipped without `ext-ffi` and OpenSSL 3.5

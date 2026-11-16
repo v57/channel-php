@@ -453,6 +453,7 @@ final class LowLevelCoverageTest extends TestCase
         $this->setPrivate($client, 'address', $address);
         $this->setPrivate($client, 'headersProvider', $headersProvider);
         $this->setPrivate($client, 'maxPayload', WebSocketClient::DEFAULT_MAX_PAYLOAD);
+        $this->setPrivate($client, 'dialer', null);
         $this->setPrivate($client, 'wasOpen', false);
         $this->setPrivate($client, 'closeError', null);
         $this->setPrivate($client, 'writing', false);

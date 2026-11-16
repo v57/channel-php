@@ -9,7 +9,8 @@
     "ext-openswoole": "*"
   },
   "suggest": {
-    "ext-simdjson": "Fast JSON decoder used by JsonCodec when available"
+    "ext-simdjson": "Fast JSON decoder used by JsonCodec when available",
+    "ext-ffi": "The experimental QUIC transport (quic://, listenQuic), with OpenSSL 3.5+"
   },
   "require-dev": {
     "phpunit/phpunit": "^11.5"

@@ -1,0 +1,28 @@
+// Calls a PHP QUIC server with the TypeScript reference's client and prints what came back (QuicTest.php runs it):
+// bun tests/Quic/client.ts <port> <cert.pem>
+import { readFileSync } from 'node:fs'
+import { Channel } from '../../../channel/quic'
+
+const [port, cert] = process.argv.slice(2)
+const client = new Channel()
+  .post('hello', () => 'ts world')
+  .connect(`quic://127.0.0.1:${port}`, { quic: { ca: readFileSync(cert) }, headers: async () => ({ 'X-Name': 'ts' }) })
+
+const values: unknown[] = []
+for await (const value of client.values('count')) values.push(value)
+const { promise: event, resolve } = Promise.withResolvers()
+// A PHP server's subscribe reply carries `"body": null` (TS leaves it out), which TS hands over as a snapshot
+const subscription = await client.subscribe('ticks', 'a', body => body !== null && resolve(body))
+await client.send('tick')
+const result = {
+  hello: await client.send('hello'),
+  echo: await client.send('echo', { a: [1, 'b'] }),
+  name: await client.send('name'),
+  mirror: await client.send('mirror'),
+  values,
+  event: await event,
+}
+subscription.cancel()
+client.stop()
+console.log(JSON.stringify(result))
+process.exit(0)

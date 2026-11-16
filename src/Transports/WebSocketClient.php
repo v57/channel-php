@@ -33,6 +33,9 @@ final class WebSocketClient implements ConnectionInterface
     /** Connected socket (OpenSwoole\Coroutine\Client) once the handshake succeeded. */
     private ?object $ws = null;
 
+    /** The open connection when a dialer made it (QUIC). */
+    private ?ClientLink $link = null;
+
     /** Largest message accepted from the server: 16 MiB, the TS/Bun default. */
     public const DEFAULT_MAX_PAYLOAD = 16 * 1024 * 1024;
     private const MAX_HANDSHAKE_BYTES = 64 * 1024;
@@ -56,6 +59,13 @@ final class WebSocketClient implements ConnectionInterface
         private readonly string $address,
         private readonly mixed $headersProvider = null,
         private readonly int $maxPayload = self::DEFAULT_MAX_PAYLOAD,
+        /**
+         * Opens the connections instead of the WebSocket code: (address, headers) => ClientLink, or null when
+         * this attempt failed (retried like an unreachable address).
+         *
+         * @var (\Closure(string, array<string, string>): ?ClientLink)|null
+         */
+        private readonly ?\Closure $dialer = null,
     ) {
         if (Coroutine::getCid() < 0 || !function_exists('go')) {
             throw new \RuntimeException('WebSocketClient requires OpenSwoole coroutine context.');
@@ -114,7 +124,7 @@ final class WebSocketClient implements ConnectionInterface
         $requestId = $this->id++;
         $this->pending[$requestId] = $body;
 
-        if ($this->ws === null) {
+        if ($this->ws === null && $this->link === null) {
             return $requestId;
         }
 
@@ -237,10 +247,18 @@ final class WebSocketClient implements ConnectionInterface
             } catch (\Throwable) {
             }
         }
+        $this->link?->close();
     }
 
     private function sendNow(mixed $body): void
     {
+        if ($this->link !== null) {
+            try {
+                $this->link->sendText(JsonCodec::encode($body));
+            } catch (\Throwable) {
+            }
+            return;
+        }
         if ($this->ws === null) {
             return;
         }
@@ -299,6 +317,7 @@ final class WebSocketClient implements ConnectionInterface
             }
             $this->isConnected = false;
             $this->ws = null;
+            $this->link = null;
             $this->writeQueue = [];
 
             if ($this->onClose !== null) {
@@ -313,6 +332,10 @@ final class WebSocketClient implements ConnectionInterface
 
     private function connectAndRun(): void
     {
+        if ($this->dialer !== null) {
+            $this->connectLinkAndRun($this->dialer);
+            return;
+        }
         $parts = parse_url($this->address);
         if ($parts === false || !isset($parts['host'])) {
             $this->isRunning = false;
@@ -375,6 +398,60 @@ final class WebSocketClient implements ConnectionInterface
                 $client->close();
             } catch (\Throwable) {
             }
+        }
+    }
+
+    /** connectAndRun() over a connection the dialer opens. */
+    private function connectLinkAndRun(\Closure $dialer): void
+    {
+        $headers = $this->resolveHeaders();
+        if (!$this->isRunning) {
+            return;
+        }
+        $link = $dialer($this->address, $headers);
+        if ($link === null) {
+            return; // not reachable (yet): pending requests are kept and re-sent on connect
+        }
+        if (!$this->isRunning) {
+            $link->close();
+            return;
+        }
+        try {
+            $this->link = $link;
+            $this->isConnected = true;
+            $this->wasOpen = true;
+            $this->attempts = 0;
+
+            if ($this->onOpen !== null) {
+                ($this->onOpen)();
+            }
+            if ($this->pending !== []) {
+                $this->sendNow(array_values($this->pending));
+            }
+
+            while ($this->isRunning) {
+                try {
+                    $text = $link->receive();
+                } catch (ClientLinkError $error) {
+                    $this->closeError = 'connection closed: ' . $error->getMessage();
+                    return;
+                }
+                if ($text === null) {
+                    return;
+                }
+                try {
+                    $value = JsonCodec::decode($text);
+                } catch (\Throwable $error) {
+                    // Same as over WebSocket: a peer that sends invalid JSON gets disconnected
+                    $this->closeError = 'invalid message from server: ' . $error->getMessage();
+                    return;
+                }
+                if ($this->onMessage !== null) {
+                    ($this->onMessage)($value);
+                }
+            }
+        } finally {
+            $link->close();
         }
     }
 
